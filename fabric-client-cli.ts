@@ -2,6 +2,12 @@
  * Copyright IBM Corp. All Rights Reserved.
  *
  * SPDX-License-Identifier: Apache-2.0
+ * 
+ * BRy Tecnologia - 2023 - FSD
+ * Projeto Hyperledger Fabric - https://git.bry.com.br/ict/blockchain/hyperledger-fabric
+ * 
+ * Client NodeJS de acesso ao peer para execução de transações no ambiente Hyperledger
+ * 
  */
 
 import * as grpc from '@grpc/grpc-js';
@@ -11,8 +17,21 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { TextDecoder } from 'util';
 
-const channelName = envOrDefault('CHANNEL_NAME', 'mychannel');
-const chaincodeName = envOrDefault('CHAINCODE_NAME', 'basic');
+
+
+//ICTSCT-457 - Client NodeJS que pode executar qualquer função do contrato, podendo passar argumentos na linha de comando.
+//Execução no terminal: ts-node fabric-client-cli <channel> <contractName> <functionToRun> <argFunction1> <argFunction2..5>
+const channelArg = process.argv[0];
+const contractArg = process.argv[1];
+const functionToRun = process.argv[2];
+const argFunction1 = process.argv[3];
+const argFunction2 = process.argv[4];
+const argFunction3 = process.argv[5];
+const argFunction4 = process.argv[6];
+const argFunction5 = process.argv[7];
+
+const channelName = envOrDefault('CHANNEL_NAME', channelArg);
+const chaincodeName = envOrDefault('CHAINCODE_NAME', contractArg);
 const mspId = envOrDefault('MSP_ID', 'Org1MSP');
 
 // Path to crypto materials.
@@ -48,6 +67,7 @@ async function main(): Promise<void> {
         identity: await newIdentity(),
         signer: await newSigner(),
         // Default timeouts for different gRPC calls
+        //ICTSCT-457 - TODO Permitir timeouts customizados via .env
         evaluateOptions: () => {
             return { deadline: Date.now() + 15000 }; // 5 seconds
         },
@@ -69,23 +89,55 @@ async function main(): Promise<void> {
         // Get the smart contract from the network.
         const contract = network.getContract(chaincodeName);
 
-        // Return all the current assets on the ledger.
-        await getAllAssets(contract);
+        // Pegamos o contrato do Query system chaincode (QSCC) onde ficam guardados todos os dados de transação/IDs
+        const contractQscc = network.getContract("qscc");
 
-        // Create a new asset on the ledger.
-        await createAsset(contract);
-
-        // Update an existing asset asynchronously.
-        await transferAssetAsync(contract);
-
-        // Get the asset details by assetID.
-        await readAssetByID(contract);
-
-        // Update an asset which does not exist.
-        await updateNonExistentAsset(contract)
+        //ICTSCT-457 - Escolha de qual função de do contrato iremos executar de acordo com o comando
+        switch (functionToRun) {
+            case 'initLedger':
+                checkArgs(functionToRun, argFunction1, argFunction2, argFunction3, argFunction4, argFunction5);
+                await initLedger(contract);
+                break;
+            case 'getAllAssets':
+                await getAllAssets(contract);
+                break;
+            case 'createAsset':
+                checkArgs(functionToRun, argFunction1, argFunction2, argFunction3, argFunction4, argFunction5);
+                await createAsset(contract, argFunction1, argFunction2, argFunction3, argFunction4, argFunction5);
+                break;
+            case 'readAssetByID':
+                checkArgs(functionToRun, argFunction1, argFunction2, argFunction3, argFunction4, argFunction5);
+                await readAssetByID(contract, argFunction1);
+                break;
+            case 'updateNonExistentAsset':
+                await updateNonExistentAsset(contract);
+                break;
+            case 'readAssetBySctSerial':
+                checkArgs(functionToRun, argFunction1, argFunction2, argFunction3, argFunction4, argFunction5);
+                await readAssetBySctSerial(contract, argFunction1);
+                break;
+            case 'getTransactionByTransactionId':
+                checkArgs(functionToRun, argFunction1, argFunction2, argFunction3, argFunction4, argFunction5);
+                await getTransactionByTransactionId(contract, argFunction1);
+                break;
+            default:
+                console.error(`Function not recognized: ${functionToRun}`);
+                break;
+        }
     } finally {
         gateway.close();
         client.close();
+    }
+}
+
+function checkArgs(func: string, arg1: string, arg2: string, arg3: string, arg4: string, arg5: string): void {
+    if (functionToRun === 'createAsset' || functionToRun === 'readAssetByID' || functionToRun === 'readAssetBySctSerial' || 'getTransactionByTransactionId') {
+        if (argFunction1 === '' || !argFunction1) {
+            console.error('******** FAILED to run the application:', "Argument 1 for function " + functionToRun + " must be specified and valid.");
+        } else if (functionToRun === 'createAsset' && argFunction1 === '' || !argFunction1 || argFunction2 === '' || !argFunction2 || argFunction3 === '' 
+        || !argFunction3 || argFunction4 === '' || !argFunction4 || argFunction5 === '' || !argFunction5) {
+            console.error('******** FAILED to run the application:', "Arguments 2~5 for function createAsset must be specified and valid.");
+        }
     }
 }
 
@@ -120,96 +172,110 @@ async function newSigner(): Promise<Signer> {
  * initial deployment. A new version of the chaincode deployed later would likely not need to run an "init" function.
  */
 async function initLedger(contract: Contract): Promise<void> {
-    console.log('\n--> Submit Transaction: InitLedger, function creates the initial set of assets on the ledger');
+    console.info('\n--> Submit Transaction: InitLedger, function creates the initial set of assets on the ledger');
 
-    await contract.submitTransaction('InitLedger');
+    var result = await contract.submitTransaction('InitLedger');
 
-    console.log('*** Transaction committed successfully');
+    // ICTSCT-457 - Retornando o TXID nos logs para permitir a consulta de transação por TXID com a função getTransactionByTransactionId
+    const response = JSON.parse(result.toString());
+    const transactionId = response.transactionId;
+    console.info(`Transaction ID: ${transactionId}`);
+
+    console.info('*** Transaction committed successfully');
 }
 
 /**
  * Evaluate a transaction to query ledger state.
  */
 async function getAllAssets(contract: Contract): Promise<void> {
-    console.log('\n--> Evaluate Transaction: GetAllAssets, function returns all the current assets on the ledger');
+    console.info('\n--> Evaluate Transaction: GetAllAssets, function returns all the current assets on the ledger');
 
     const resultBytes = await contract.evaluateTransaction('GetAllAssets');
 
     const resultJson = utf8Decoder.decode(resultBytes);
     const result = JSON.parse(resultJson);
-    console.log('*** Result:', result);
+    console.info('*** Result:', result);
 }
 
 /**
  * Submit a transaction synchronously, blocking until it has been committed to the ledger.
  */
-async function createAsset(contract: Contract): Promise<void> {
-    console.log('\n--> Submit Transaction: CreateAsset, creates new asset with ID, Color, Size, Owner and AppraisedValue arguments');
+//ICTSCT-457 - Modificação desta função para o novo padrão do contrato SCT
+async function createAsset(contract: Contract, assetId: string, sctSerial: string, sasCommonName: string, merkleRoot: string, currentHash: string): Promise<void> {
+    console.info('\n--> Submit Transaction: CreateAsset, creates new asset with ID, Color, Size, Owner and AppraisedValue arguments');
 
-    await contract.submitTransaction(
+    var result = await contract.submitTransaction(
         'CreateAsset',
         assetId,
-        'yellow',
-        '5',
-        'Tom',
-        '1300',
+        sctSerial,
+        sasCommonName,
+        merkleRoot,
+        currentHash,
     );
 
-    console.log('*** Transaction committed successfully');
+    // ICTSCT-457 - Retornando o TXID nos logs para permitir a consulta de transação por TXID com a função getTransactionByTransactionId
+    const response = JSON.parse(result.toString());
+    const transactionId = response.transactionId;
+    console.info(`Transaction ID: ${transactionId}`);
+
+    console.info('*** Transaction committed successfully');
 }
 
-/**
- * Submit transaction asynchronously, allowing the application to process the smart contract response (e.g. update a UI)
- * while waiting for the commit notification.
- */
-async function transferAssetAsync(contract: Contract): Promise<void> {
-    console.log('\n--> Async Submit Transaction: TransferAsset, updates existing asset owner');
-
-    const commit = await contract.submitAsync('TransferAsset', {
-        arguments: [assetId, 'Saptha'],
-    });
-    const oldOwner = utf8Decoder.decode(commit.getResult());
-
-    console.log(`*** Successfully submitted transaction to transfer ownership from ${oldOwner} to Saptha`);
-    console.log('*** Waiting for transaction commit');
-
-    const status = await commit.getStatus();
-    if (!status.successful) {
-        throw new Error(`Transaction ${status.transactionId} failed to commit with status code ${status.code}`);
-    }
-
-    console.log('*** Transaction committed successfully');
-}
-
-async function readAssetByID(contract: Contract): Promise<void> {
-    console.log('\n--> Evaluate Transaction: ReadAsset, function returns asset attributes');
+async function readAssetByID(contract: Contract, assetId: string): Promise<void> {
+    console.info('\n--> Evaluate Transaction: ReadAsset, function returns asset attributes');
 
     const resultBytes = await contract.evaluateTransaction('ReadAsset', assetId);
 
     const resultJson = utf8Decoder.decode(resultBytes);
     const result = JSON.parse(resultJson);
-    console.log('*** Result:', result);
+    console.info('*** Result:', result);
 }
 
 /**
  * submitTransaction() will throw an error containing details of any error responses from the smart contract.
  */
-async function updateNonExistentAsset(contract: Contract): Promise<void>{
-    console.log('\n--> Submit Transaction: UpdateAsset asset70, asset70 does not exist and should return an error');
+//ICTSCT-457 - Essa função é apenas um teste unitário de erro para quando tentamos enviar uma tx que manda alterar asset inexistente
+async function updateNonExistentAsset(contract: Contract): Promise<void> {
+    console.info('\n--> Submit Transaction: UpdateAsset -999, -999 does not exist and should return an error');
 
     try {
         await contract.submitTransaction(
-            'UpdateAsset',
-            'asset70',
-            'blue',
-            '5',
-            'Tomoko',
-            '300',
+            '-999',
+            '1',
+            '1',
+            '1',
+            '1',
+            '1',
         );
-        console.log('******** FAILED to return an error');
+        console.warn('******** FAILED to return an error');
     } catch (error) {
-        console.log('*** Successfully caught the error: \n', error);
+        console.error('*** Successfully caught the error: \n', error);
     }
+}
+
+
+//ICTSCT-457 - Função que pega asset pelo SCT Serial
+async function readAssetBySctSerial(contract: Contract, assetSctSerial: string): Promise<void> {
+    console.info('\n--> Evaluate Transaction: readAssetBySctSerial, function returns asset attributes, queried by SCT Serial');
+
+    const resultBytes = await contract.evaluateTransaction('ReadAssetBySctSerial', assetSctSerial);
+
+    const resultJson = utf8Decoder.decode(resultBytes);
+    const result = JSON.parse(resultJson);
+    console.info('*** Result:', result);
+}
+
+async function getTransactionByTransactionId(contract: Contract, txId: string): Promise<void> {
+    console.info('\n--> Submit Query: getTransactionByTransactionId, get transaction associated with txId ' + txId);
+    try {
+        const resultBytes = await contract.evaluateTransaction("GetTransactionByID", channelName, txId)
+        const resultJson = utf8Decoder.decode(resultBytes);
+        const result = JSON.parse(resultJson);
+        console.info('*** Result:', result);
+    } catch (error) {
+        console.error('*** Successfully caught the error: \n', error);
+    }
+
 }
 
 /**
@@ -223,13 +289,13 @@ function envOrDefault(key: string, defaultValue: string): string {
  * displayInputParameters() will print the global scope parameters used by the main driver routine.
  */
 async function displayInputParameters(): Promise<void> {
-    console.log(`channelName:       ${channelName}`);
-    console.log(`chaincodeName:     ${chaincodeName}`);
-    console.log(`mspId:             ${mspId}`);
-    console.log(`cryptoPath:        ${cryptoPath}`);
-    console.log(`keyDirectoryPath:  ${keyDirectoryPath}`);
-    console.log(`certPath:          ${certPath}`);
-    console.log(`tlsCertPath:       ${tlsCertPath}`);
-    console.log(`peerEndpoint:      ${peerEndpoint}`);
-    console.log(`peerHostAlias:     ${peerHostAlias}`);
+    console.info(`channelName:       ${channelName}`);
+    console.info(`chaincodeName:     ${chaincodeName}`);
+    console.info(`mspId:             ${mspId}`);
+    console.info(`cryptoPath:        ${cryptoPath}`);
+    console.info(`keyDirectoryPath:  ${keyDirectoryPath}`);
+    console.info(`certPath:          ${certPath}`);
+    console.info(`tlsCertPath:       ${tlsCertPath}`);
+    console.info(`peerEndpoint:      ${peerEndpoint}`);
+    console.info(`peerHostAlias:     ${peerHostAlias}`);
 }
